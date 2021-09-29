@@ -4,7 +4,7 @@ package io.confluent.parallelconsumer.state;
  * Copyright (C) 2020-2021 Confluent, Inc.
  */
 
-import io.confluent.parallelconsumer.ParallelEoSStreamProcessor;
+import io.confluent.parallelconsumer.internal.AbstractParallelEoSStreamProcessor;
 import io.confluent.parallelconsumer.internal.InternalRuntimeError;
 import io.confluent.parallelconsumer.offsets.EncodingNotSupportedException;
 import io.confluent.parallelconsumer.offsets.OffsetMapCodecManager;
@@ -105,9 +105,9 @@ public class PartitionMonitor<K, V> implements ConsumerRebalanceListener {
     /**
      * Clear offset map for revoked partitions
      * <p>
-     * {@link ParallelEoSStreamProcessor#onPartitionsRevoked} handles committing off offsets upon revoke
+     * {@link AbstractParallelEoSStreamProcessor#onPartitionsRevoked} handles committing off offsets upon revoke
      *
-     * @see ParallelEoSStreamProcessor#onPartitionsRevoked
+     * @see AbstractParallelEoSStreamProcessor#onPartitionsRevoked
      */
     @Override
     public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
@@ -292,7 +292,7 @@ public class PartitionMonitor<K, V> implements ConsumerRebalanceListener {
     }
 
     /**
-     * Get final offset data, build the the offset map, and replace it in our map of offset data to send
+     * Get final offset data, build the offset map, and replace it in our map of offset data to send
      *
      * @param offsetsToSend
      * @param topicPartitionKey
@@ -309,7 +309,7 @@ public class PartitionMonitor<K, V> implements ConsumerRebalanceListener {
             long offsetOfNextExpectedMessage;
             OffsetAndMetadata finalOffsetOnly = offsetsToSend.get(topicPartitionKey);
             if (finalOffsetOnly == null) {
-                // no new low water mark to commit, so use the last one again
+                // no new low watermark to commit, so use the last one again
                 offsetOfNextExpectedMessage = incompleteOffsets.iterator().next(); // first element
             } else {
                 offsetOfNextExpectedMessage = finalOffsetOnly.offset();
@@ -362,4 +362,9 @@ public class PartitionMonitor<K, V> implements ConsumerRebalanceListener {
     public boolean isPartitionAssigned(ConsumerRecord<K, V> rec) {
         return (getState(toTP(rec)) != null);
     }
+
+    public void onSuccess(WorkContainer<K, V> wc) {
+        getState(wc.getTopicPartition()).onSuccess(wc);
+    }
+
 }

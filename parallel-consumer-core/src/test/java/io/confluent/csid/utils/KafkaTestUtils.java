@@ -174,7 +174,9 @@ public class KafkaTestUtils {
         while (count < quantity) {
             Integer key = getRandomKey(keys);
             int recsCountForThisKey = (int) (Math.random() * quantity);
-            ConsumerRecord<String, String> rec = makeRecord(key.toString(), count + "");
+            String value = count + "";
+            String keyString = key.toString();
+            ConsumerRecord<String, String> rec = makeRecord(keyString, value);
 //            var consumerRecords = generateRecordsForKey(key, recsCountForThisKey);
             keyRecords.computeIfAbsent(key, (ignore) -> new ArrayList<>()).add(rec);
 //            keyRecords.put(key, consumerRecords);
@@ -244,18 +246,16 @@ public class KafkaTestUtils {
 
 
     public static void completeWork(final WorkManager<String, String> wmm, List<WorkContainer<String, String>> work, long offset) {
-        WorkContainer<String, String> foundWork = work.stream()
+        WorkContainer<String, String> workMatchingProvidedOffset = work.stream()
                 .filter(x ->
                         x.getCr().offset() == offset
                 )
                 .findFirst().get();
-        KafkaTestUtils.completeWork(wmm, foundWork);
+        KafkaTestUtils.completeWork(wmm, workMatchingProvidedOffset);
     }
 
     public static void completeWork(final WorkManager<String, String> wmm, final WorkContainer<String, String> wc) {
-        FutureTask future = new FutureTask<>(() -> {
-            return true;
-        });
+        FutureTask future = new FutureTask<>(() -> true);
         future.run();
         assertThat(future).isDone();
         wc.setFuture(future);

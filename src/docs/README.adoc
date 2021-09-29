@@ -50,6 +50,8 @@ image:https://maven-badges.herokuapp.com/maven-central/io.confluent.parallelcons
 
 Parallel Apache Kafka client wrapper with client side queueing, a simpler consumer/producer API with *key concurrency* and *extendable non-blocking IO* processing.
 
+Confluent's https://www.confluent.io/confluent-accelerators/#parallel-consumer[product page for the project].
+
 WARNING: This is not a Confluent supported product.
 It is an experimental alpha stage accelerator.
 See the <<Support and Issues>> section for more information.
@@ -64,6 +66,8 @@ It also opens up new use cases like extreme parallelism, external data enrichmen
 ----
 include::{project_root}/parallel-consumer-examples/parallel-consumer-example-core/src/main/java/io/confluent/parallelconsumer/examples/core/CoreApp.java[tag=example]
 ----
+
+An overview article to the library can also be found on Confluent's https://www.confluent.io/blog/[blog]: https://www.confluent.io/blog/introducing-confluent-parallel-message-processing-client/[Introducing the Confluent Parallel Consumer].
 
 toc::[]
 
@@ -110,6 +114,7 @@ If <<ordering-guarantees,log ordering>> isn't a concern this can be an unwelcome
 The Parallel Consumer provides a solution to this problem.
 
 In addition, the <<http-with-vertx,Vert.x extension>> to this library supplies non-blocking interfaces, allowing higher still levels of concurrency with a further simplified interface.
+Also included now is a <<project-reactor,module for>> https://projectreactor.io[Project Reactor.io].
 
 === FAQ
 
@@ -192,16 +197,18 @@ We can break out as described below into the tool for processing that step, then
 
 == Feature List
 
-* Have massively parallel consumption processing without running hundreds or thousands of
-** Kafka consumer clients
-** topic partitions
+* Have massively parallel consumption processing without running hundreds or thousands of:
+** Kafka consumer clients,
+** topic partitions,
 +
-without operational burden or harming the clusters performance
+without operational burden or harming the cluster's performance
 * Client side queueing system on top of Apache Kafka consumer
 ** Efficient individual message acknowledgement system (without local or third party external system state storage) to massively reduce (and usually completely eliminate) message replay upon failure - see <<offset_map>> section for more details
+* Solution for the https://en.wikipedia.org/wiki/Head-of-line_blocking["head of line"] blocking problem where continued failure of a single message, prevents progress for messages behind it in the queue
 * Per `key` concurrent processing, per partition and unordered message processing
 * Offsets committed correctly, in order, of only processed messages, regardless of concurrency level or retries
-* Vert.x non-blocking library integration (HTTP currently)
+* Vert.x non-blocking library integration (HTTP and any Vert.x future support)
+* Reactor non-blocking library integration
 * Fair partition traversal
 * Zero~ dependencies (`Slf4j` and `Lombok`) for the core module
 * Java 8 compatibility
@@ -362,6 +369,7 @@ include::{project_root}/parallel-consumer-examples/parallel-consumer-example-cor
 [source,xml,indent=0]
 include::{project_root}/parallel-consumer-examples/parallel-consumer-example-vertx/pom.xml[tag=exampleDep]
 
+[[common_preparation]]
 === Common Preparation
 
 .Setup the client
@@ -436,6 +444,11 @@ include::{project_root}/parallel-consumer-examples/parallel-consumer-example-ver
 
 See the link:{project_root}/parallel-consumer-examples/parallel-consumer-example-vertx/src/main/java/io/confluent/parallelconsumer/examples/vertx/VertxApp.java[Vert.x example] project, and it's test.
 
+[[project-reactor]]
+=== Project Reactor
+
+TODO example
+
 [[streams-usage-code]]
 === Kafka Streams Concurrent Processing
 
@@ -453,6 +466,21 @@ include::{project_root}/parallel-consumer-examples/parallel-consumer-example-str
 <2> For the slow consumer part of your Topology, drop down into the parallel consumer, and use massive concurrency
 
 See the link:{project_root}/parallel-consumer-examples/parallel-consumer-example-streams/src/main/java/io/confluent/parallelconsumer/examples/streams/StreamsApp.java[Kafka Streams example] project, and it's test.
+
+[[confluent-cloud]]
+=== Confluent Cloud
+
+. Provision your fully managed Kafka cluster in Confluent Cloud
+.. Sign up for https://www.confluent.io/confluent-cloud/tryfree/[Confluent Cloud], a fully-managed Apache Kafka service.
+.. After you log in to Confluent Cloud, click on `Add cloud environment` and name the environment `learn-kafka`.
+Using a new environment keeps your learning resources separate from your other Confluent Cloud resources.
+.. Click on https://confluent.cloud/learn[LEARN] and follow the instructions to launch a Kafka cluster and to enable Schema Registry.
+. Access the client configuration settings
+.. From the Confluent Cloud Console, navigate to your Kafka cluster.
+From the `Clients` view, get the connection information customized to your cluster (select `Java`).
+.. Create new credentials for your Kafka cluster, and then Confluent Cloud will show a configuration block with your new credentials automatically populated (make sure `show API keys` is checked).
+.. Use these settings presented to https://docs.confluent.io/clients-kafka-java/current/overview.html[configure your clients].
+. Use these clients for steps outlined in the <<common_preparation>> section.
 
 [[ordering-guarantees]]
 == Ordering Guarantees
@@ -682,6 +710,11 @@ Run `git bisect` to find a bad commit, edit the Maven command in `bisect.sh` and
 git bisect start good bad
 git bisect run ./bisect.sh
 ----
+
+Note::
+`mvn compile` - Due to a bug in Maven's handling of test-jar dependencies - running `mvn compile` fails, use `mvn test-compile` instead.
+See https://github.com/confluentinc/parallel-consumer/issues/162[issue #162]
+and this https://stackoverflow.com/questions/4786881/why-is-test-jar-dependency-required-for-mvn-compile[Stack Overflow question].
 
 === Testing
 

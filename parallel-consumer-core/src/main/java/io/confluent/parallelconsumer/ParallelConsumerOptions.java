@@ -4,6 +4,7 @@ package io.confluent.parallelconsumer;
  * Copyright (C) 2020-2021 Confluent, Inc.
  */
 
+import io.confluent.parallelconsumer.internal.AbstractParallelEoSStreamProcessor;
 import io.confluent.parallelconsumer.state.WorkContainer;
 import lombok.Builder;
 import lombok.Getter;
@@ -19,7 +20,7 @@ import static io.confluent.csid.utils.StringUtils.msg;
 import static io.confluent.parallelconsumer.ParallelConsumerOptions.CommitMode.PERIODIC_TRANSACTIONAL_PRODUCER;
 
 /**
- * The options for the {@link ParallelEoSStreamProcessor} system.
+ * The options for the {@link AbstractParallelEoSStreamProcessor} system.
  *
  * @see #builder()
  * @see ParallelConsumerOptions.ParallelConsumerOptionsBuilder
@@ -154,6 +155,26 @@ public class ParallelConsumerOptions<K, V> {
     private final Function<WorkContainer, Duration> retryDelayProvider;
 
     public static Function<WorkContainer, Duration> retryDelayProviderStatic;
+
+    /**
+     * Controls how long to block while waiting for the {@link Producer#send} to complete for any ProducerRecords
+     * returned from the user-function. Only relevant if using one of the produce-flows and providing a
+     * {@link ParallelConsumerOptions#producer}. If the timeout occurs the record will be re-processed in the user-function.
+     *
+     * Consider aligning the value with the {@link ParallelConsumerOptions#producer}-options to avoid unnecessary re-processing
+     * and duplicates on slow {@link Producer#send} calls.
+     *
+     * @see org.apache.kafka.clients.producer.ProducerConfig#DELIVERY_TIMEOUT_MS_CONFIG
+     */
+    @Builder.Default
+    private final Duration sendTimeout = Duration.ofSeconds(10);
+
+    /**
+     * Controls how long to block while waiting for offsets to be committed.
+     * Only relevant if using {@link CommitMode#PERIODIC_CONSUMER_SYNC} commit-mode.
+     */
+    @Builder.Default
+    private final Duration offsetCommitTimeout = Duration.ofSeconds(10);
 
     public void validate() {
         Objects.requireNonNull(consumer, "A consumer must be supplied");

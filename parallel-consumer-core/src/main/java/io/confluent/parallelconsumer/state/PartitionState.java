@@ -8,6 +8,7 @@ import io.confluent.parallelconsumer.offsets.OffsetMapCodecManager;
 import lombok.Getter;
 import lombok.NonNull;
 import lombok.Setter;
+import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
 import org.apache.kafka.common.TopicPartition;
@@ -16,9 +17,9 @@ import java.util.NavigableMap;
 import java.util.Set;
 import java.util.concurrent.ConcurrentSkipListMap;
 
-import static lombok.AccessLevel.PACKAGE;
-import static lombok.AccessLevel.PUBLIC;
+import static lombok.AccessLevel.*;
 
+@Slf4j
 public class PartitionState<K, V> {
 
     @Getter
@@ -57,11 +58,11 @@ public class PartitionState<K, V> {
     private Long offsetHighestSeen;
 
     /**
-     * Highest offset which has completed.
+     * Highest offset which has completed successfully ("succeeded").
      */
-    // todo not used - future feature? only used be continuous encoder branches - used in continuous encoding  branch
-    // todo null valid? change to option?
-    // Long partitionOffsetHighestSucceeded;
+    @Getter(PUBLIC)
+    @Setter(PRIVATE)
+    private long offsetHighestSucceeded = -1L;
 
     /**
      * If true, more messages are allowed to process for this partition.
@@ -124,7 +125,6 @@ public class PartitionState<K, V> {
 
     public boolean isRecordPreviouslyProcessed(final ConsumerRecord<K, V> rec) {
         Set<Long> incompleteOffsets = this.incompleteOffsets;
-        //Set<Long> incompleteOffsets = this.partitionIncompleteOffsets.getOrDefault(tp, new TreeSet<>());
         boolean previouslyProcessed;
         long offset = rec.offset();
         if (incompleteOffsets.contains(offset)) {
@@ -145,6 +145,22 @@ public class PartitionState<K, V> {
 
     public int getCommitQueueSize() {
         return commitQueues.size();
+    }
+
+    public void onSuccess(WorkContainer<K, V> work) {
+        updateHighestSucceededOffsetSoFar(work);
+    }
+
+    /**
+     * Update highest Succeeded seen so far
+     */
+    private void updateHighestSucceededOffsetSoFar(WorkContainer<K, V> work) {
+        long highestSucceeded = getOffsetHighestSucceeded();
+        long thisOffset = work.offset();
+        if (thisOffset > highestSucceeded) {
+            log.trace("Updating highest completed - was: {} now: {}", highestSucceeded, thisOffset);
+            setOffsetHighestSucceeded(thisOffset);
+        }
     }
 
 }

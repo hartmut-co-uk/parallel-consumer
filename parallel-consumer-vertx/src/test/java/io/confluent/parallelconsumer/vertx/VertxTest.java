@@ -5,9 +5,10 @@ package io.confluent.parallelconsumer.vertx;
  */
 
 import com.github.tomakehurst.wiremock.WireMockServer;
+import io.confluent.csid.utils.WireMockUtils;
 import io.confluent.parallelconsumer.ParallelConsumerOptions;
-import io.confluent.parallelconsumer.ParallelEoSStreamProcessor;
 import io.confluent.parallelconsumer.ParallelEoSStreamProcessorTestBase;
+import io.confluent.parallelconsumer.internal.AbstractParallelEoSStreamProcessor;
 import io.confluent.parallelconsumer.vertx.VertxParallelEoSStreamProcessor.RequestInfo;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
@@ -17,6 +18,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.ext.web.client.HttpRequest;
 import io.vertx.ext.web.client.HttpResponse;
 import io.vertx.ext.web.client.WebClient;
+import io.vertx.junit5.Checkpoint;
 import io.vertx.junit5.VertxExtension;
 import io.vertx.junit5.VertxTestContext;
 import lombok.SneakyThrows;
@@ -76,7 +78,7 @@ class VertxTest extends ParallelEoSStreamProcessorTestBase {
     }
 
     @Override
-    protected ParallelEoSStreamProcessor initAsyncConsumer(ParallelConsumerOptions parallelConsumerOptions) {
+    protected AbstractParallelEoSStreamProcessor initAsyncConsumer(ParallelConsumerOptions parallelConsumerOptions) {
         VertxOptions vertxOptions = new VertxOptions();
         Vertx vertx = Vertx.vertx(vertxOptions);
         WebClient wc = WebClient.create(vertx);
@@ -245,6 +247,45 @@ class VertxTest extends ParallelEoSStreamProcessorTestBase {
         if (!success)
             throw new AssertionError("Timeout reached");
         return list;
+    }
+
+    @SneakyThrows
+    @Test
+    void genericVertxFuture(Vertx vertx, VertxTestContext tc) {
+        primeFirstRecord();
+        primeFirstRecord();
+
+        var latch = new CountDownLatch(1);
+        vertxAsync.addVertxOnCompleteHook(latch::countDown);
+
+        var latchTwo = new CountDownLatch(1);
+
+        Checkpoint cp = tc.checkpoint(3);
+
+        vertxAsync.vertxFuture(rec -> vertx.executeBlocking(event -> {
+            log.debug("Inner user function {}", rec);
+            var data = rec.value();
+
+            try {
+                log.info("Waiting");
+                latchTwo.await();
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+
+            cp.flag();
+            log.info("Finished waiting");
+
+            event.complete();
+        }));
+
+        log.info("Pausing");
+        Thread.sleep(1000L);
+        latchTwo.countDown();
+        log.info("Counted down");
+
+        awaitLatch(latch);
+        log.info("Latch gotten");
     }
 
 }

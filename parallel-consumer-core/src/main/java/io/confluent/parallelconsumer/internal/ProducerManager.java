@@ -7,7 +7,6 @@ package io.confluent.parallelconsumer.internal;
 import io.confluent.csid.utils.TimeUtils;
 import io.confluent.parallelconsumer.ParallelConsumer;
 import io.confluent.parallelconsumer.ParallelConsumerOptions;
-import io.confluent.parallelconsumer.ParallelEoSStreamProcessor;
 import io.confluent.parallelconsumer.ParallelStreamProcessor;
 import io.confluent.parallelconsumer.state.WorkManager;
 import lombok.SneakyThrows;
@@ -22,6 +21,7 @@ import org.apache.kafka.common.TopicPartition;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.time.Duration;
+import java.time.temporal.TemporalUnit;
 import java.util.ConcurrentModificationException;
 import java.util.Map;
 import java.util.concurrent.Future;
@@ -50,7 +50,6 @@ public class ProducerManager<K, V> extends AbstractOffsetCommitter<K, V> impleme
     private Field txManagerField;
     private Method txManagerMethodIsCompleting;
     private Method txManagerMethodIsReady;
-    private final long sendTimeoutSeconds = 5L;
 
     public ProducerManager(final Producer<K, V> newProducer, final ConsumerManager<K, V> newConsumer, final WorkManager<K, V> wm, ParallelConsumerOptions options) {
         super(newConsumer, wm);
@@ -91,7 +90,7 @@ public class ProducerManager<K, V> extends AbstractOffsetCommitter<K, V> impleme
     /**
      * Nasty reflection but better than relying on user supplying their config
      *
-     * @see ParallelEoSStreamProcessor#checkAutoCommitIsDisabled
+     * @see AbstractParallelEoSStreamProcessor#checkAutoCommitIsDisabled
      */
     @SneakyThrows
     private boolean getProducerIsTransactional() {
@@ -146,7 +145,7 @@ public class ProducerManager<K, V> extends AbstractOffsetCommitter<K, V> impleme
         try {
             log.trace("Blocking on produce result");
             RecordMetadata recordMetadata = TimeUtils.time(() ->
-                    send.get(sendTimeoutSeconds, TimeUnit.SECONDS));
+                    send.get(options.getSendTimeout().toMillis(), TimeUnit.MILLISECONDS));
             log.trace("Produce result received");
             return recordMetadata;
         } catch (Exception e) {

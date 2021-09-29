@@ -5,7 +5,7 @@ package io.confluent.parallelconsumer.vertx;
  */
 
 import io.confluent.parallelconsumer.ParallelConsumerOptions;
-import io.confluent.parallelconsumer.ParallelEoSStreamProcessor;
+import io.confluent.parallelconsumer.internal.ExternalEngine;
 import io.confluent.parallelconsumer.state.WorkContainer;
 import io.vertx.core.AsyncResult;
 import io.vertx.core.Future;
@@ -38,8 +38,9 @@ import java.util.function.Function;
 
 import static io.confluent.parallelconsumer.internal.UserFunctions.carefullyRun;
 
+
 @Slf4j
-public class VertxParallelEoSStreamProcessor<K, V> extends ParallelEoSStreamProcessor<K, V>
+public class VertxParallelEoSStreamProcessor<K, V> extends ExternalEngine<K, V>
         implements VertxParallelStreamProcessor<K, V> {
 
     /**
@@ -95,9 +96,12 @@ public class VertxParallelEoSStreamProcessor<K, V> extends ParallelEoSStreamProc
         VertxOptions vertxOptions = new VertxOptions().setWorkerPoolSize(cores);
 
         int maxConcurrency = options.getMaxConcurrency();
+
+        // should this be user configurable? - probably
         WebClientOptions webClientOptions = new WebClientOptions()
-                .setMaxPoolSize(maxConcurrency)
-                .setHttp2MaxPoolSize(maxConcurrency);
+                .setMaxPoolSize(maxConcurrency) // defaults to 5
+                .setHttp2MaxPoolSize(maxConcurrency) // defaults to 1
+                ;
 
         if (vertx == null)
             vertx = Vertx.vertx(vertxOptions);
@@ -165,32 +169,54 @@ public class VertxParallelEoSStreamProcessor<K, V> extends ParallelEoSStreamProc
             // execute user's onSend callback
             onWebRequestSentCallback.accept(futureWebResponse);
 
-            // attach internal handler
-            WorkContainer<K, V> wc = wm.getSm().getWorkContainerForRecord(record);
-            wc.setWorkType(VERTX_TYPE);
-
-            futureWebResponse.onSuccess(h -> {
-                log.debug("Vert.x Vertical success");
-                log.trace("Response body: {}", h.bodyAsString());
-                wc.onUserFunctionSuccess();
-                addToMailbox(wc);
-            });
-            futureWebResponse.onFailure(h -> {
-                log.error("Vert.x Vertical fail", h);
-                wc.onUserFunctionFailure();
-                addToMailbox(wc);
-            });
-
-            // add plugin callback hook
-            futureWebResponse.onComplete(ar -> {
-                log.trace("Running plugin hook");
-                this.onVertxCompleteHook.ifPresent(Runnable::run);
-            });
+            addVertxHooks(record, futureWebResponse);
 
             return UniLists.of(futureWebResponse);
         };
 
         Consumer<Future<HttpResponse<Buffer>>> noOp = (ignore) -> {
+        }; // don't need it, we attach to vertx futures for callback
+
+        super.supervisorLoop(userFuncWrapper, noOp);
+    }
+
+    private void addVertxHooks(final ConsumerRecord<K, V> record, final Future<?> send) {
+        // attach internal handler
+        WorkContainer<K, V> wc = wm.getSm().getWorkContainerForRecord(record);
+        wc.setWorkType(VERTX_TYPE);
+
+        send.onSuccess(h -> {
+            log.debug("Vert.x Vertical success");
+//            log.trace("Response body: {}", h.bodyAsString());
+            wc.onUserFunctionSuccess();
+            addToMailbox(wc);
+        });
+        send.onFailure(h -> {
+            log.error("Vert.x Vertical fail: {}", h.getMessage());
+            wc.onUserFunctionFailure();
+            addToMailbox(wc);
+        });
+
+        // add plugin callback hook
+        send.onComplete(ar -> {
+            log.trace("Running plugin hook");
+            this.onVertxCompleteHook.ifPresent(Runnable::run);
+        });
+    }
+
+    @Override
+    public void vertxFuture(final Function<ConsumerRecord<K, V>, Future<?>> result) {
+
+        Function<ConsumerRecord<K, V>, List<Future<?>>> userFuncWrapper = record -> {
+
+            Future<?> send = carefullyRun(result, record);
+
+            addVertxHooks(record, send);
+
+            return UniLists.of(send);
+        };
+
+        Consumer<Future<?>> noOp = ignore -> {
         }; // don't need it, we attach to vertx futures for callback
 
         super.supervisorLoop(userFuncWrapper, noOp);
@@ -230,7 +256,7 @@ public class VertxParallelEoSStreamProcessor<K, V> extends ParallelEoSStreamProc
     protected void onUserFunctionSuccess(WorkContainer<K, V> wc, List<?> resultsFromUserFunction) {
         // with vertx, a function hasn't succeeded until the inner vertx function has also succeeded
         // logging
-        if (isVertxWork(resultsFromUserFunction)) {
+        if (isAsyncFutureWork(resultsFromUserFunction)) {
             log.debug("Vertx creation function success, user's function success");
         } else {
             super.onUserFunctionSuccess(wc, resultsFromUserFunction);
@@ -241,7 +267,7 @@ public class VertxParallelEoSStreamProcessor<K, V> extends ParallelEoSStreamProc
     protected void addToMailBoxOnUserFunctionSuccess(WorkContainer<K, V> wc, List<?> resultsFromUserFunction) {
         // with vertx, a function hasn't succeeded until the inner vertx function has also succeeded
         // no op
-        if (isVertxWork(resultsFromUserFunction)) {
+        if (isAsyncFutureWork(resultsFromUserFunction)) {
             log.debug("User function success but not adding vertx vertical to mailbox yet");
         } else {
             super.addToMailBoxOnUserFunctionSuccess(wc, resultsFromUserFunction);
@@ -251,7 +277,8 @@ public class VertxParallelEoSStreamProcessor<K, V> extends ParallelEoSStreamProc
     /**
      * Determines if any of the elements in the supplied list is a Vertx Future type
      */
-    private boolean isVertxWork(List<?> resultsFromUserFunction) {
+    @Override
+    protected boolean isAsyncFutureWork(List<?> resultsFromUserFunction) {
         for (Object object : resultsFromUserFunction) {
             return (object instanceof Future);
         }

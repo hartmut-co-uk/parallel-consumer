@@ -8,7 +8,7 @@ import io.confluent.csid.utils.LoopingResumingIterator;
 import io.confluent.csid.utils.WallClock;
 import io.confluent.parallelconsumer.ParallelConsumerOptions;
 import io.confluent.parallelconsumer.ParallelConsumerOptions.ProcessingOrder;
-import io.confluent.parallelconsumer.ParallelEoSStreamProcessor;
+import io.confluent.parallelconsumer.internal.AbstractParallelEoSStreamProcessor;
 import io.confluent.parallelconsumer.internal.DynamicLoadFactor;
 import io.confluent.parallelconsumer.internal.RateLimiter;
 import lombok.Getter;
@@ -29,8 +29,6 @@ import java.util.function.Consumer;
 
 import static io.confluent.csid.utils.BackportUtils.toSeconds;
 import static io.confluent.csid.utils.KafkaUtils.toTP;
-import static io.confluent.csid.utils.StringUtils.msg;
-import static io.confluent.parallelconsumer.ParallelConsumerOptions.ProcessingOrder.KEY;
 import static io.confluent.parallelconsumer.ParallelConsumerOptions.ProcessingOrder.UNORDERED;
 import static lombok.AccessLevel.PACKAGE;
 import static lombok.AccessLevel.PUBLIC;
@@ -132,9 +130,9 @@ public class WorkManager<K, V> implements ConsumerRebalanceListener {
     /**
      * Clear offset map for revoked partitions
      * <p>
-     * {@link ParallelEoSStreamProcessor#onPartitionsRevoked} handles committing off offsets upon revoke
+     * {@link AbstractParallelEoSStreamProcessor#onPartitionsRevoked} handles committing off offsets upon revoke
      *
-     * @see ParallelEoSStreamProcessor#onPartitionsRevoked
+     * @see AbstractParallelEoSStreamProcessor#onPartitionsRevoked
      */
     @Override
     public void onPartitionsRevoked(Collection<TopicPartition> partitions) {
@@ -284,14 +282,16 @@ public class WorkManager<K, V> implements ConsumerRebalanceListener {
                 // check we have capacity in offset storage to process more messages
                 TopicPartition topicPartition = workContainer.getTopicPartition();
                 boolean notAllowedMoreRecords = pm.isBlocked(topicPartition);
-                // If the record has been previously attempted, it is already represented in the current offset encoding,
-                // and may in fact be the message holding up the partition so must be retried, in which case we don't want to skip it
-                boolean recordNeverAttempted = !workContainer.hasPreviouslyFailed();
-                if (notAllowedMoreRecords && recordNeverAttempted && workContainer.isNotInFlight()) {
-                    log.debug("Not allowed more records ({}) for the partition ({}) as set from previous encode run, that this " +
-                                    "record ({}) belongs to due to offset encoding back pressure, has never been attemtped before ({}), " +
+                // If the record is below the highest succeeded offset, it is already represented in the current offset encoding,
+                // and may in fact be the message holding up the partition so must be retried, in which case we don't want to skip it.
+                // Generally speaking, completing more offsets below the highest succeeded (and thus the set represented in the encoded payload),
+                // should usually reduce the payload size requirements
+                boolean representedInEncodedPayloadAlready = workContainer.offset() < pm.getState(topicPartition).getOffsetHighestSucceeded();
+                if (notAllowedMoreRecords && !representedInEncodedPayloadAlready && workContainer.isNotInFlight()) {
+                    log.debug("Not allowed more records for the partition ({}) as set from previous encode run (blocked), that this " +
+                                    "record ({}) belongs to due to offset encoding back pressure, is within the encoded payload already (offset lower than highest succeeded, " +
                                     "not in flight ({}), continuing on to next container in shard.",
-                            notAllowedMoreRecords, topicPartition, workContainer.offset(), recordNeverAttempted, workContainer.isNotInFlight());
+                            topicPartition, workContainer.offset(), workContainer.isNotInFlight());
                     continue;
                 }
 
@@ -368,19 +368,10 @@ public class WorkManager<K, V> implements ConsumerRebalanceListener {
         ConsumerRecord<K, V> cr = wc.getCr();
         log.trace("Work success ({}), removing from processing shard queue", wc);
         wc.succeed();
-        Object key = sm.computeShardKey(cr);
-        // remove from processing queues
-        var shard = sm.getShard(key);
-        if (shard == null)
-            throw new NullPointerException(msg("Shard is missing for key {}", key));
-        long offset = cr.offset();
-        shard.remove(offset);
-        // If using KEY ordering, where the shard key is a message key, garbage collect old shard keys (i.e. KEY ordering we may never see a message for this key again)
-        boolean keyOrdering = options.getOrdering().equals(KEY);
-        if (keyOrdering && shard.isEmpty()) {
-            log.trace("Removing empty shard (key: {})", key);
-            sm.removeShard(key);
-        }
+
+        // update as we go
+        pm.onSuccess(wc);
+        sm.onSuccess(cr);
 
         // notify listeners
         successfulWorkListeners.forEach((c) -> c.accept(wc));
@@ -473,16 +464,24 @@ public class WorkManager<K, V> implements ConsumerRebalanceListener {
             var workToRemove = new LinkedList<WorkContainer<K, V>>();
             var incompleteOffsets = new LinkedHashSet<Long>();
             long lowWaterMark = -1;
+            var highestSucceeded = partitionState.getOffsetHighestSucceeded();
             // can't commit this offset or beyond, as this is the latest offset that is incomplete
             // i.e. only commit offsets that come before the current one, and stop looking for more
-            boolean iteratedBeyondLowWaterMarkBeingLowestCommittableOffset = false;
+            boolean beyondSuccessiveSucceededOffsets = false;
             for (final var offsetAndItsWorkContainer : partitionQueue.entrySet()) {
                 // ordered iteration via offset keys thanks to the tree-map
                 WorkContainer<K, V> container = offsetAndItsWorkContainer.getValue();
+
+                //
                 long offset = container.getCr().offset();
+                if (offset > highestSucceeded) {
+                    break; // no more to encode
+                }
+
+                //
                 boolean complete = container.isUserFunctionComplete();
                 if (complete) {
-                    if (container.getUserFunctionSucceeded().get() && !iteratedBeyondLowWaterMarkBeingLowestCommittableOffset) {
+                    if (container.getUserFunctionSucceeded().get() && !beyondSuccessiveSucceededOffsets) {
                         log.trace("Found offset candidate ({}) to add to offset commit map", container);
                         workToRemove.add(container);
                         // as in flights are processed in order, this will keep getting overwritten with the highest offset available
@@ -490,19 +489,19 @@ public class WorkManager<K, V> implements ConsumerRebalanceListener {
                         long offsetOfNextExpectedMessageToBeCommitted = offset + 1;
                         OffsetAndMetadata offsetData = new OffsetAndMetadata(offsetOfNextExpectedMessageToBeCommitted);
                         offsetsToSend.put(topicPartitionKey, offsetData);
-                    } else if (container.getUserFunctionSucceeded().get() && iteratedBeyondLowWaterMarkBeingLowestCommittableOffset) {
+                    } else if (container.getUserFunctionSucceeded().get() && beyondSuccessiveSucceededOffsets) {
                         // todo lookup the low water mark and include here
                         log.trace("Offset {} is complete and succeeded, but we've iterated past the lowest committable offset ({}). Will mark as complete in the offset map.",
                                 container.getCr().offset(), lowWaterMark);
                         // no-op - offset map is only for not succeeded or completed offsets
                     } else {
-                        log.trace("Offset {} is complete, but failed processing. Will track in offset map as not complete. Can't do normal offset commit past this point.", container.getCr().offset());
-                        iteratedBeyondLowWaterMarkBeingLowestCommittableOffset = true;
+                        log.trace("Offset {} is complete, but failed processing. Will track in offset map as failed. Can't do normal offset commit past this point.", container.getCr().offset());
+                        beyondSuccessiveSucceededOffsets = true;
                         incompleteOffsets.add(offset);
                     }
                 } else {
                     lowWaterMark = container.offset();
-                    iteratedBeyondLowWaterMarkBeingLowestCommittableOffset = true;
+                    beyondSuccessiveSucceededOffsets = true;
                     log.trace("Offset ({}) is incomplete, holding up the queue ({}) of size {}.",
                             container.getCr().offset(),
                             topicPartitionKey,
@@ -615,4 +614,7 @@ public class WorkManager<K, V> implements ConsumerRebalanceListener {
         }
     }
 
+    public boolean isSystemIdle() {
+        return getNumberRecordsOutForProcessing() == 0;
+    }
 }
